@@ -7,6 +7,7 @@ Created on 2018-04-24
 @author: dongxiaoguang
 """
 
+import math
 import numpy as np
 from . import sim_data
 from .sim_data import Sim_data
@@ -66,19 +67,22 @@ class InsDataMgr(object):
         # reference data
         self.time = Sim_data(name='time',\
                              description='sample time',\
-                             units=['sec'])
+                             units=['sec'],\
+                             legend=['time'])
         self.gps_time = Sim_data(name='gps_time',\
                                  description='GPS sample time',\
-                                 units=['sec'])
+                                 units=['sec'],\
+                                 legend=['gps_time'])
         self.gps_visibility = Sim_data(name='gps_visibility',\
-                                       description='GPS visibility')
+                                       description='GPS visibility',\
+                                       legend=['gps_visibility'])
         self.ref_pos = Sim_data(name='ref_pos',\
                                 description='true LLA pos in the navigation frame',\
                                 units=['rad', 'rad', 'm'],\
                                 output_units=['deg', 'deg', 'm'],\
                                 legend=['ref_pos_lat', 'ref_pos_lon', 'ref_pos_alt'])
         self.ref_vel = Sim_data(name='ref_vel',\
-                                description='true vel in the body frame',\
+                                description='true vel in the NED frame',\
                                 units=['m/s', 'm/s', 'm/s'],\
                                 legend=['ref_vel_x', 'ref_vel_y', 'ref_vel_z'])
         self.ref_att_euler = Sim_data(name='ref_att_euler',\
@@ -105,6 +109,10 @@ class InsDataMgr(object):
                                 legend=['ref_gps_lat', 'ref_gps_lon', 'ref_gps_alt',\
                                         'ref_gps_vN', 'ref_gps_vE', 'ref_gps_vD'])
                                 # downsampled true pos/vel
+        self.ref_odo = Sim_data(name='ref_odo',\
+                                description='true odometer velocity',\
+                                units=['m/s'],\
+                                legend=['ref_odo'])
         self.ref_mag = Sim_data(name='ref_mag',\
                                 description='true magnetic field in the body frame',\
                                 units=['uT', 'uT', 'uT'],\
@@ -125,6 +133,10 @@ class InsDataMgr(object):
                             output_units=['deg', 'deg', 'm', 'm/s', 'm/s', 'm/s'],\
                             legend=['gps_lat', 'gps_lon', 'gps_alt',\
                                     'gps_vN', 'gps_vE', 'gps_vD'])
+        self.odo = Sim_data(name='odo',\
+                            description='odometer velocity measurement',\
+                            units=['m/s'],\
+                            legend=['odo'])
         self.mag = Sim_data(name='mag',\
                             description='magnetometer measurements',\
                             units=['uT', 'uT', 'uT'],\
@@ -184,7 +196,7 @@ class InsDataMgr(object):
         self.ad_gyro = Sim_data(name='ad_gyro',\
                                 description='Allan deviation of gyro',\
                                 units=['rad/s', 'rad/s', 'rad/s'],\
-                                output_units=['deg/hr', 'deg/hr', 'deg/hr'],\
+                                output_units=['deg/s', 'deg/s', 'deg/s'],\
                                 logx=True, logy=True,\
                                 legend=['AD_wx', 'AD_wy', 'AD_wz'])
         self.ad_accel = Sim_data(name='ad_accel',\
@@ -219,7 +231,7 @@ class InsDataMgr(object):
         ########## all data ##########
         # __all include all data that may occur in an INS solution.
         self.__all = {
-            # input data
+            # error-free data
             self.fs.name: self.fs,
             self.fs_gps.name: self.fs_gps,
             self.fs_mag.name: self.fs_mag,
@@ -234,11 +246,13 @@ class InsDataMgr(object):
             self.ref_gyro.name: self.ref_gyro,
             self.ref_accel.name: self.ref_accel,
             self.ref_gps.name: self.ref_gps,
+            self.ref_odo.name: self.ref_odo,
             self.ref_mag.name: self.ref_mag,
             # sensor data
             self.gyro.name: self.gyro,
             self.accel.name: self.accel,
             self.gps.name: self.gps,
+            self.odo.name: self.odo,
             self.mag.name: self.mag,
             # calibration algorithm output
             self.gyro_cal.name: self.gyro_cal,
@@ -353,19 +367,38 @@ class InsDataMgr(object):
         else:
             return None
 
-    def get_error_stat(self, data_name, end_point=False, angle=False, use_output_units=False,\
-                       extra_opt=''):
+    def get_data_properties(self, data_name):
+        '''
+        Get the properties of the data specified by data_name.
+        Args:
+            data_name: a string to specify the data
+        Returns:
+            [description, units, plottable, logx, logy, legend]
+        '''
+        return [self.__all[data_name].description,\
+                self.__all[data_name].units,\
+                self.__all[data_name].plottable,\
+                self.__all[data_name].logx,\
+                self.__all[data_name].logy,\
+                self.__all[data_name].legend]
+
+    def get_error_stats(self, data_name, err_stats_start=0, angle=False,\
+                       use_output_units=False, extra_opt=''):
         '''
         Get error statistics of data_name.
         Args:
             data_name: name of data whose error will be calculated.
-            end_point: True if want to calculate only the end point error. In this case,
+            err_stats_start: This argument specify the starting point in seconds from where
+                the error statistics are calculated.
+                If it is -1, end-point error statistics will be calculated. In this case,
                 the result contains statistics of end-point errors of multiple runs.
-                False if want to calculate the process error. In this case, the result is
+                Otherwise, the process error of data specified by data_name starting from
+                err_stats_start(in seconds) is calculated. In this case, the result is
                 a dict of statistics of process error of each simulatoin run.
                 For example, if we want the end-point error of position from a free-integration
                 algorithm ran for n times, the result is {'max': numpy.array([rx, ry, rz]),
-                'avg': numpy.array([rx, ry, rz]), 'std': numpy.array([rx, ry, rz])}.
+                                                          'avg': numpy.array([rx, ry, rz]),
+                                                          'std': numpy.array([rx, ry, rz])}.
                 If we want the process error of an attitude determination algorithm ran for n
                 times, the result is {'max': a dict of numpy.array([yaw, pitch, roll]),
                                       'avg': a dict of numpy.array([yaw, pitch, roll]),
@@ -382,7 +415,7 @@ class InsDataMgr(object):
         err_stat = None
         # is this set of data available?
         if data_name not in self.available:
-            print('__process_error_stat: %s is not available.'% data_name)
+            print('error stats: %s is not available.'% data_name)
             return None
         # is the reference of data_name available?
         ref_data_name = 'ref_' + data_name
@@ -395,12 +428,12 @@ class InsDataMgr(object):
             data_err = self.calc_data_err(data_name, ref_data_name, angle, extra_opt)
             if data_err is not None:
                 self.__err[data_err.name] = data_err
-        if end_point is True:
+        if err_stats_start == -1:
             # end-point error
-            err_stat = self.__end_point_error_stat(data_name)
+            err_stat = self.__end_point_error_stats(data_name)
         else:
             # process error
-            err_stat = self.__process_error_stat(data_name)
+            err_stat = self.__process_error_stats(data_name, err_stats_start)
         # unit conversion
         if use_output_units and (err_stat is not None):
             for i in err_stat:
@@ -508,8 +541,8 @@ class InsDataMgr(object):
                     err.flat[j] = attitude.angle_range_pi(err.flat[j])
         else:
             # convert x and r to ECEF first
-            x_ecef = geoparams.lla2xyz_batch(x)
-            r_ecef = geoparams.lla2xyz_batch(r)
+            x_ecef = geoparams.lla2ecef_batch(x)
+            r_ecef = geoparams.lla2ecef_batch(r)
             err = x_ecef - r_ecef
             # convert ecef err to NED err
             if lla == 1:
@@ -597,6 +630,12 @@ class InsDataMgr(object):
             # print(list(self.supported_plot.keys()))
             # raise ValueError("Unsupported data to plot: %s."%data)
 
+    def show_plot(self):
+        '''
+        Show all plots
+        '''
+        sim_data.show_plot()
+
     def save_kml_files(self, data_dir):
         '''
         generate kml files from reference position and simulation position.
@@ -608,18 +647,51 @@ class InsDataMgr(object):
             convert_xyz_to_lla = True
         # ref position
         if 'ref_pos' in self.available:
+            if 'ref_att_euler' in self.available:
+                heading = self.__all['ref_att_euler'].data[:, 0] * attitude.R2D
+            else:
+                heading = None
+            max_points = self.__all['ref_pos'].data.shape[0] / self.__all['fs'].data
             kml_gen.kml_gen(data_dir,\
                             self.__all['ref_pos'].data,\
+                            heading=heading,\
                             name='ref_pos',\
-                            convert_to_lla=convert_xyz_to_lla)
+                            convert_to_lla=convert_xyz_to_lla,\
+                            color='ff0000ff',\
+                            max_points=max_points)
+        # gps position
+        if 'gps' in self.available:
+            for i in self.__all['gps'].data.keys():
+                pos_name = 'gps_' + str(i)
+                heading = np.zeros((self.__all['gps'].data[i].shape[0],))
+                for j in range(self.__all['gps'].data[i].shape[0]):
+                    heading[j] = math.atan2(self.__all['gps'].data[i][j,4],
+                                            self.__all['gps'].data[i][j,3]) * attitude.R2D
+                    self.__all['gps'].data[i][j, 0:3] *= self.__all['gps_visibility'].data[j]
+                max_points = self.__all['gps'].data[i].shape[0] / self.__all['fs_gps'].data
+                kml_gen.kml_gen(data_dir,\
+                                self.__all['gps'].data[i][:, 0:3],\
+                                heading=heading,\
+                                convert_to_lla=convert_xyz_to_lla,\
+                                name=pos_name,\
+                                color='ff00ff00',\
+                                max_points=max_points)
         # simulation position
         if 'pos' in self.available:
             for i in self.__all['pos'].data.keys():
                 pos_name = 'pos_' + str(i)
+                if 'att_euler' in self.available:
+                    heading = self.__all['att_euler'].data[i][:, 0] * attitude.R2D
+                else:
+                    heading = None
+                max_points = self.__all['pos'].data[i].shape[0] / self.__all['fs'].data
                 kml_gen.kml_gen(data_dir,\
                                 self.__all['pos'].data[i],\
+                                heading=heading,\
+                                convert_to_lla=convert_xyz_to_lla,\
                                 name=pos_name,\
-                                convert_to_lla=convert_xyz_to_lla)
+                                color='ffff0000',\
+                                max_points=max_points)
 
     def is_supported(self, data_name):
         '''
@@ -627,44 +699,89 @@ class InsDataMgr(object):
         '''
         return data_name in self.__all.keys()
 
-    def __end_point_error_stat(self, data_name):
+    def is_available(self, data_name, key=None):
+        '''
+        Tell if data_name is available. If key is not None, further tell if data in data_name
+        has the key.
+        '''
+        # if data_name is available
+        rtn = data_name in self.available
+        # if data_name has key
+        if rtn and key is not None:
+            if isinstance(self.__all[data_name].data, dict):
+                rtn = key in self.__all[data_name].data.keys()
+            else:
+                rtn = False
+        return rtn
+
+    def __end_point_error_stats(self, data_name, group=True):
         '''
         end-point error statistics
         '''
         # error available?
         err_data_name = 'err_' + data_name
         if err_data_name not in self.__err:
-            print('__end_point_error_stat: %s is not available.'% data_name)
+            print('__end_point_error_stats: %s is not available.'% data_name)
+        # collect data according to keys
         if isinstance(self.__err[err_data_name].data, dict):
-            # a dict contains data of multiple runs
-            err = []
-            for i in self.__err[err_data_name].data:
-                err.append(self.__err[err_data_name].data[i][-1, :])
-            # convert list to np.array
-            err = np.array(err)
-            return self.__array_stat(err)
+            # collect groups
+            groups = None
+            if group:
+                keys = self.__err[err_data_name].data.keys()
+                groups = self.__get_data_groups(keys)
+            # only one group
+            if groups is None:
+                # a dict contains data of multiple runs
+                err = []
+                for i in self.__err[err_data_name].data:
+                    err.append(self.__err[err_data_name].data[i][-1, :])
+                # convert list to np.array
+                err = np.array(err)
+                return self.__array_stats(err)
+            # at least two groups
+            else:
+                stat = {'max': {}, 'avg': {}, 'std': {}}
+                for j in groups:
+                    err = []
+                    for i in self.__err[err_data_name].data:
+                        if j in i:
+                            err.append(self.__err[err_data_name].data[i][-1, :])
+                    tmp = self.__array_stats(err)
+                    stat['max'][j] = tmp['max']
+                    stat['avg'][j] = tmp['avg']
+                    stat['std'][j] = tmp['std']
+                return stat
         elif isinstance(self.__err[err_data_name].data, np.ndarray):
             err = self.__err[err_data_name].data[-1, :]
-            return self.__array_stat(err)
+            return self.__array_stats(err)
         else:
             print('Unsupported data type to calculate error statitics for %s'% data_name)
             return None
 
-    def __process_error_stat(self, data_name):
+    def __process_error_stats(self, data_name, err_stats_start):
         '''
         process error statistics
         '''
         # error available?
         err_data_name = 'err_' + data_name
         if err_data_name not in self.__err:
-            print('__end_point_error_stat: %s is not available.'% data_name)
+            print('__process_error_stats: %s is not available.'% data_name)
         # begin to calculate error stat
         if isinstance(self.__all[data_name].data, dict):
             stat = {'max': {}, 'avg': {}, 'std': {}}
             for i in self.__all[data_name].data:
                 # error stat
-                err = self.__err[err_data_name].data[i]
-                tmp = self.__array_stat(err)
+                if i in self.algo_time.data:
+                    idx = np.where(self.algo_time.data[i] >= err_stats_start)[0]
+                else:
+                    idx = np.where(self.time.data >= err_stats_start)[0]
+                if idx.shape[0] == 0:
+                    print('err_stats_start exceeds max data points.')
+                    idx = 0
+                else:
+                    idx = idx[0]
+                err = self.__err[err_data_name].data[i][idx::, :]
+                tmp = self.__array_stats(err)
                 stat['max'][i] = tmp['max']
                 stat['avg'][i] = tmp['avg']
                 stat['std'][i] = tmp['std']
@@ -672,12 +789,12 @@ class InsDataMgr(object):
         elif isinstance(self.__all[data_name].data, np.ndarray):
             # error stat
             err = self.__err[err_data_name].data
-            return self.__array_stat(err)
+            return self.__array_stats(err)
         else:
             print('Unsupported data type to calculate error statitics for %s'% data_name)
             return None
 
-    def __array_stat(self, x):
+    def __array_stats(self, x):
         '''
         statistics of array x.
         Args:
@@ -689,6 +806,30 @@ class InsDataMgr(object):
         return {'max': np.max(np.abs(x), 0),\
                 'avg': np.average(x, 0),\
                 'std': np.std(x, 0)}
+
+    def __get_data_groups(self, keys):
+        '''
+        Check if the keys can be grouped. The key should be named as GROUP_idx.
+        For example list of keys [algo0_0, algo0_1 algo1_0, algo1_1] can be divided
+        into two groups: [algo0, algo1], and each group contains two elements. 
+        This is used to calculate statistics of error of results from multiple algorithms.
+        Args:
+            keys: dict keys
+        Return:
+            a list of groups if there is more than one group, and none if there is only one group
+        '''
+        groups = []
+        for i in keys:
+            idx = str(i).rfind('_')
+            if idx == -1:
+                groups = [] # one of the keys cannot be grouped, do not group
+                break
+            group_name = i[0:idx]
+            if group_name not in groups:
+                groups.append(group_name)
+        if len(groups) <= 1:
+            groups = None
+        return groups
 
     def __interp(self, x, xp, fp):
         '''

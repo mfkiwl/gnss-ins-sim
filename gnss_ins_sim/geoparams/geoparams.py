@@ -17,9 +17,9 @@ import numpy as np
 VERSION = '1.0'
 GM = 3.986004418e14                 # m3/(s2)
 Re = 6378137                        # m
-FLATTENING = 0.00335281066475       # Earth flattening, f = (a-b)/a
+FLATTENING = 1/298.257223563        # Earth flattening, f = (a-b)/a
 ECCENTRICITY = 0.0818191908426215   # Earth eccentricy, e2 = 2*f-f^2
-E_SQR = 0.00669437999014            # squared eccentricity
+E_SQR = ECCENTRICITY**2             # squared eccentricity
 W_IE = 7292115e-11                  # Earth's rotation rate
 
 def geo_param(pos):
@@ -67,7 +67,7 @@ def earth_radius(lat):
     rn = Re / (math.sqrt(1.0 - E_SQR*sl_sqr))
     return rm, rn
 
-def lla2xyz(lla):
+def lla2ecef(lla):
     '''
     [Lat Lon Alt] position to xyz position
     Args:
@@ -86,7 +86,7 @@ def lla2xyz(lla):
     z = (r*(1.0-E_SQR) + lla[2]) * sl
     return np.array([x, y, z])
 
-def lla2xyz_batch(lla):
+def lla2ecef_batch(lla):
     '''
     [Lat Lon Alt] position to xyz position
     Args:
@@ -96,7 +96,7 @@ def lla2xyz_batch(lla):
     '''
     # only one LLA
     if lla.ndim == 1:
-        return lla2xyz(lla)
+        return lla2ecef(lla)
     # multiple LLA
     n = lla.shape[0]
     xyz = np.zeros((n, 3))
@@ -112,7 +112,7 @@ def lla2xyz_batch(lla):
         xyz[i, 2] = (r*(1.0-E_SQR) + lla[i, 2]) * sl
     return xyz
 
-def xyz2lla(xyz):
+def ecef2lla(xyz):
     '''
     [x y z] position in ECEF to [Lat Lon Alt]
     Args:

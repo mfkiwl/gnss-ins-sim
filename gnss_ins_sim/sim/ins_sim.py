@@ -11,12 +11,15 @@ import os
 import time
 import math
 import numpy as np
-import matplotlib.pyplot as plt
 from .ins_data_manager import InsDataMgr
 from .ins_algo_manager import InsAlgoMgr
 from ..pathgen import pathgen
-from .. attitude import attitude
+from ..attitude import attitude
 from ..geoparams import geoparams
+
+# version info
+NAME = 'gnss-ins-sim'
+VERSION = '3.0.0_alpha'
 
 # built-in mobility
 high_mobility = np.array([1.0, 0.5, 2.0])   # m/s/s, rad/s/s, rad/s
@@ -39,7 +42,7 @@ class Sim(object):
                 a directory contains the data files. Data files should be named as data_name.csv.
                 Supported data names are algorithm input. (Refer to readme.md)
                 If you do not have logged data files and want to generate sensor data from a motion
-                definition file,  motion_def should be a .csv file to define the waypoints.
+                definition file,  motion_def should be a csv file to define the waypoints.
                 The .csv file should be organized as follows:
                 row 1: header line for initial states
                 row 2: initial states, which include:
@@ -48,7 +51,7 @@ class Sim(object):
                     col 7-9: initial attitude (Euler angles that rotate the reference frame to the
                         body frame according to the ZYX rotation sequence, deg).
                 row 3: header line for motion command
-                row >=2: motion commands, which include
+                row >=4: motion commands, which include
                     col 1: motion type. The following types are supported:
                         1: Euler angles change rate and body frame velocity change rate.
                         2: absolute att and absolute vel to reach.
@@ -67,13 +70,15 @@ class Sim(object):
                         executed after max time. If you want to fully control execution time by
                         your own, you should always choose motion type to be 1.
                     col 9: gps visibility, should be 1 or 0.
+                motion_def can also be a string that contains the same contents as the csv file
+                mentioned above.
 
             ref_frame: reference frame used as the navigation frame and the attitude reference.
                         0: NED (default), with x axis pointing along geographic north,
                            y axis pointing eastward,
                            z axis pointing downward.
                            Position will be expressed in LLA form, and the reference velocity of
-                           the vehicle relative to the ECEF frame will be expressed in the body
+                           the vehicle relative to the ECEF frame will be expressed in the NED
                            frame, and GPS velocity will be expressed in the NED frame.
                         1: a virtual inertial frame with constant g,
                            x axis pointing along geographic/magnetic north,
@@ -100,16 +105,27 @@ class Sim(object):
                     [max_acceleration, max_angular_acceleration, max_angular_velocity],
                     in units of [m/s/s, deg/s/s, deg/s]
 
-            env: vibration model. There are three kinds of vibration models:
-                '[nx ny nz]g-random': normal-distribution random vibration, rms is n*9.8 m/s^2
-                '[nx ny nz]-random': normal-distribution random vibration, rms is n m/s^2
-                '[nx ny nz]g-mHz-sinusoidal': sinusoidal vibration of m Hz, amplitude is n*9.8 m/s^2
-                '[nx ny nz]-mHz-sinusoidal': sinusoidal vibration of m Hz, amplitude is n m/s^2
-                numpy array of (n,4): single-sided PSD. Each row is [freq, x, y, z], m^2/s^4/Hz
-
+            env: vibration model. 
+            There are three kinds of vibration models: random, sinusoidal and PSD
+                'acc'
+                    '[nx ny nz]g-random': normal-distribution random vibration, rms is n*9.8 m/s^2
+                    '[nx ny nz]-random': normal-distribution random vibration, rms is n m/s^2
+                    '[nx ny nz]g-mHz-sinusoidal': sinusoidal vibration of m Hz, amplitude is n*9.8 m/s^2
+                    '[nx ny nz]-mHz-sinusoidal': sinusoidal vibration of m Hz, amplitude is n m/s^2
+                    numpy array of (n,4): single-sided PSD. Each row is [freq, x, y, z], (m/s^2)^2/Hz
+                'gyro'
+                    '[nx ny nz]d-random': normal-distribution random vibration, rms is n deg/s
+                    '[nx ny nz]-random': normal-distribution random vibration, rms is n rad/s
+                    '[nx ny nz]d-mHz-sinusoidal': sinusoidal vibration of m Hz, amplitude is n deg/s
+                    '[nx ny nz]-mHz-sinusoidal': sinusoidal vibration of m Hz, amplitude is n rad/s
+                    numpy array of (n,4): single-sided PSD. Each row is [freq, x, y, z], (deg/s)^2/Hz
             algorithm: a user defined algorithm or list of algorithms. If there are multiple
                 algorithms, all algorithms should have the same input and output.
         '''
+        # version info of gnss-ins-sim
+        self.name = NAME
+        self.version = VERSION
+        # simulation input
         self.fs = fs
         self.imu = imu
         self.mode = mode
@@ -172,7 +188,10 @@ class Sim(object):
         # simulation complete successfully
         self.sim_complete = True
 
-    def results(self, data_dir=None, end_point=False, gen_kml=False, extra_opt=''):
+        #### generate associated data
+        self.__add_associated_data_to_results()
+
+    def results(self, data_dir=None, err_stats_start=0, gen_kml=False, extra_opt=''):
         '''
         Simulation results.
         Save results to .csv files containing all data generated.
@@ -191,7 +210,11 @@ class Sim(object):
                 att_euler-algo1.csv. That is, if the algorithm has name, the name is used in the
                 key. If the algorithm has no name, a name "algo"+order of the algorithm in the
                 algorithm list is used as the algorithm name in the key.
-            end_point: True for end-point error statistics, False for process error statistics.
+            err_stats_start: When calculating the error statistics, this argument specify the
+                starting point in seconds from where the error statistics are calculated. If it
+                is -1, end-point error statistics will be calculated. Any other negative value
+                will be the same as 0. If err_stats_start exceeds the max number of data points,
+                it will be converted to 0.
             gen_kml: True to generate two .kml files containing the reference position and the
                     simulation position (output by algorithms), respectively.
             extra_opt: Extra options to generate the results. It can be a string option to
@@ -200,9 +223,6 @@ class Sim(object):
         Returns: a dict contains all simulation results.
         '''
         if self.sim_complete:
-            #### generate associated data
-            self.__add_associated_data_to_results()
-
             #### check data dir
             data_saved = []
             if data_dir is not None:    # data_dir specified, meaning to save .csv files
@@ -213,11 +233,13 @@ class Sim(object):
             #### generate .kml files
             if gen_kml is True:       # want to gen kml without specifying the data_dir
                 if data_dir is None:
+                    data_dir = ''
                     data_dir = self.__check_data_dir(data_dir)
                 self.dmgr.save_kml_files(data_dir)
 
             #### simulation summary and save summary to file
-            self.__summary(data_dir, data_saved, end_point=end_point, extra_opt=extra_opt)
+            self.__summary(data_dir, data_saved,
+                           err_stats_start=err_stats_start, extra_opt=extra_opt)
 
             #### simulation results are generated
             self.sim_results = True
@@ -251,7 +273,7 @@ class Sim(object):
         elif isinstance(sim_idx, float):
             sim_idx = [int(sim_idx)]
         invalid_idx = []
-        for i in range(0, len(sim_idx)):    # a list specified, remove invalid values
+        for i in range(len(sim_idx)):    # a list specified, remove invalid values
             sim_idx[i] = int(sim_idx[i])
             if sim_idx[i] >= self.sim_count or sim_idx[i] < 0:
                 invalid_idx.append(sim_idx[i])
@@ -284,9 +306,37 @@ class Sim(object):
                 is_angle = self.interested_error[data] == 'angle'
             self.dmgr.plot(data, keys, is_angle, opt, extra_opt)
         # show figures
-        plt.show()
+        self.dmgr.show_plot()
 
-    def __summary(self, data_dir, data_saved, end_point=False, extra_opt=''):
+    def get_names_of_available_data(self):
+        '''
+        Get a list of the names of available data in the simulation
+        '''
+        return self.dmgr.available
+
+    def get_data(self, data_names):
+        '''
+        Get data section of data_names.
+        Args:
+            data_names: a list of data names
+        Returns:
+            data: a list of data corresponding to data_names. Each element in the list
+                can be a scalar, an array or a dict.
+                If there is any unavailable data in data_names, return None.
+        '''
+        return self.dmgr.get_data(data_names).copy()
+
+    def get_data_properties(self, data_name):
+        '''
+        Get the properties of the data specified by data_name.
+        Args:
+            data_name: a string to specify the data
+        Returns:
+            [description, units, plottable, logx, logy, legend]
+        '''
+        return self.dmgr.get_data_properties(data_name)
+
+    def __summary(self, data_dir, data_saved, err_stats_start=0, extra_opt=''):
         '''
         Summary of sim results.
         '''
@@ -314,36 +364,36 @@ class Sim(object):
                 self.sum += '\t' + i  + ': ' + self.dmgr.get_data_all(i).description + '\n'
 
         #### error statistics of algorithm output
-        err_stat_header_line = False
+        err_stats_header_line = False
         for data_name in self.interested_error:
             if data_name not in self.dmgr.available:
                 continue
             is_angle = self.interested_error[data_name] == 'angle'
-            err_stat = self.dmgr.get_error_stat(data_name, end_point=end_point,\
+            err_stats = self.dmgr.get_error_stats(data_name, err_stats_start=err_stats_start,\
                                                 angle=is_angle, use_output_units=True,\
                                                 extra_opt=extra_opt)
-            if err_stat is not None:
+            if err_stats_header_line is not None:
                 # There is error stats, add a headerline
-                if err_stat_header_line is False:
-                    err_stat_header_line = True
+                if err_stats_header_line is False:
+                    err_stats_header_line = True
                     self.sum += '\n------------------------------------------------------------\n'
                     self.sum += 'The following are error statistics.'
                 # Units of the error stats
-                err_units = err_stat['units']
+                err_units = err_stats['units']
                 self.sum += '\n-----------statistics for ' +\
                             self.dmgr.get_data_all(data_name).description +\
                             ' (in units of ' +\
                             err_units +')\n'
-                if isinstance(err_stat['max'], dict):
-                    for sim_run in sorted(err_stat['max'].keys()):
+                if isinstance(err_stats['max'], dict):
+                    for sim_run in sorted(err_stats['max'].keys()):
                         self.sum += '\tSimulation run ' + str(sim_run) + ':\n'
-                        self.sum += '\t\t--Max error: ' + str(err_stat['max'][sim_run]) + '\n'
-                        self.sum += '\t\t--Avg error: ' + str(err_stat['avg'][sim_run]) + '\n'
-                        self.sum += '\t\t--Std of error: ' + str(err_stat['std'][sim_run]) + '\n'
+                        self.sum += '\t\t--Max error: ' + str(err_stats['max'][sim_run]) + '\n'
+                        self.sum += '\t\t--Avg error: ' + str(err_stats['avg'][sim_run]) + '\n'
+                        self.sum += '\t\t--Std of error: ' + str(err_stats['std'][sim_run]) + '\n'
                 else:
-                    self.sum += '\t--Max error: ' + str(err_stat['max']) + '\n'
-                    self.sum += '\t--Avg error: ' + str(err_stat['avg']) + '\n'
-                    self.sum += '\t--Std of error: ' + str(err_stat['std']) + '\n'
+                    self.sum += '\t--Max error: ' + str(err_stats['max']) + '\n'
+                    self.sum += '\t--Avg error: ' + str(err_stats['avg']) + '\n'
+                    self.sum += '\t--Std of error: ' + str(err_stats['std']) + '\n'
 
         print(self.sum)
 
@@ -370,10 +420,8 @@ class Sim(object):
             self.data_src = os.path.abspath(self.data_src)
             self.__gen_data_from_files()
             self.data_from_files = True
-        elif os.path.isfile(self.data_src): # gen data from motion definitions in a .csv file
+        else: # gen data from motion definitions
             self.__gen_data_from_pathgen()
-        else:
-            raise ValueError('%s is not a valid directory or a file.'%self.data_src)
 
     def __gen_data_from_files(self):
         '''
@@ -388,8 +436,8 @@ class Sim(object):
                 # get data units in file
                 units = self.__get_data_units(full_file_name)
                 # see if position info mathes reference frame
-                # if data_name == self.dmgr.ref_pos.name or data_name == self.dmgr.pos.name:
-                #     if ref_frame == 1 and unit == ['deg',]
+                if data_name == self.dmgr.ref_pos.name or data_name == self.dmgr.pos.name:
+                    data, units = self.__convert_pos(data, units, self.dmgr.ref_frame.data)
                 # print([data_name, data_key, units])
                 self.dmgr.add_data(data_name, data, data_key, units)
 
@@ -400,12 +448,16 @@ class Sim(object):
         # read motion definition
         [ini_pva, motion_def] = self.__parse_motion()
         # output definitions
-        output_def = np.array([[1.0, self.fs[0]], [1.0, self.fs[0]]])
+        output_def = np.array([[1.0, self.fs[0]], [1.0, self.fs[0]], [1.0, self.fs[0]]])
         if self.imu.gps:
             output_def[1, 0] = 1.0
             output_def[1, 1] = self.fs[1]
         else:
             output_def[1, 0] = -1.0
+        if self.imu.odo:
+            output_def[2, 0] = 1.0
+        else:
+            output_def[2, 0] = -1.0
         # sim mode-->vehicle maneuver capability
         mobility = self.__parse_mode(self.mode)
 
@@ -424,15 +476,23 @@ class Sim(object):
             self.dmgr.add_data(self.dmgr.gps_visibility.name, rtn['gps'][:, 7])
         if self.imu.magnetometer:
             self.dmgr.add_data(self.dmgr.ref_mag.name, rtn['mag'][:, 1:4])
+        if self.imu.odo:
+            self.dmgr.add_data(self.dmgr.ref_odo.name, rtn['odo'][:, 2])
         # generate sensor data
         # environment-->vibraition params
-        vib_def = self.__parse_env(self.env)
+        vib_def_acc = None
+        vib_def_gyro = None
+        if self.env is not None:
+            if 'acc' in self.env.keys():
+                vib_def_acc = self.__parse_env(self.env['acc'])
+            if 'gyro' in self.env.keys():
+                vib_def_gyro = self.__parse_env(self.env['gyro'])
         for i in range(self.sim_count):
             accel = pathgen.acc_gen(self.fs[0], self.dmgr.ref_accel.data,
-                                    self.imu.accel_err, vib_def)
+                                    self.imu.accel_err, vib_def_acc)
             self.dmgr.add_data(self.dmgr.accel.name, accel, key=i)
             gyro = pathgen.gyro_gen(self.fs[0], self.dmgr.ref_gyro.data,\
-                                    self.imu.gyro_err)
+                                    self.imu.gyro_err, vib_def_gyro)
             self.dmgr.add_data(self.dmgr.gyro.name, gyro, key=i)
             if self.imu.gps:
                 gps = pathgen.gps_gen(self.dmgr.ref_gps.data, self.imu.gps_err,\
@@ -441,6 +501,9 @@ class Sim(object):
             if self.imu.magnetometer:
                 mag = pathgen.mag_gen(self.dmgr.ref_mag.data, self.imu.mag_err)
                 self.dmgr.add_data(self.dmgr.mag.name, mag, key=i)
+            if self.imu.odo:
+                odo = pathgen.odo_gen(self.dmgr.ref_odo.data, self.imu.odo_err)
+                self.dmgr.add_data(self.dmgr.odo.name, odo, key=i)
 
     def __get_data_name_and_key(self, file_name):
         '''
@@ -522,10 +585,14 @@ class Sim(object):
             motion_def: motion commands, units: rad, rad/s, m, m/s.
         '''
         try:
+            # If self.data_src is a string of motion definitions, convert it to a list of strings
+            # so genfromtxt can read it.
+            if not os.path.isfile(self.data_src):
+                self.data_src = list(self.data_src.split('\n'))
             ini_state = np.genfromtxt(self.data_src, delimiter=',', skip_header=1, max_rows=1)
             waypoints = np.genfromtxt(self.data_src, delimiter=',', skip_header=3)
         except:
-            raise ValueError('motion definition file must have nine columns \
+            raise ValueError('motion definition file/string must have nine columns \
                               and at least four rows (two header rows + at least two data rows).')
         ini_pos_n = ini_state[0:3]
         ini_pos_n[0] = ini_pos_n[0] * attitude.D2R
@@ -561,9 +628,9 @@ class Sim(object):
                     mobility = high_mobility
             elif isinstance(mode, np.ndarray):      # customize the sim mode
                 if mode.shape == (3,):
-                    mobility[0] = mode[0]
-                    mobility[1] = mode[1] * attitude.D2R
-                    mobility[2] = mode[2] * attitude.D2R
+                    mobility = mode.copy()
+                    mobility[1] = mobility[1] * attitude.D2R
+                    mobility[2] = mobility[2] * attitude.D2R
                 else:
                     raise TypeError('mode should be of size (3,)')
             else:
@@ -601,9 +668,12 @@ class Sim(object):
             else:
                 raise ValueError('env = \'%s\' is not valid.'% env)
             vib_amp = 1.0   # vibration amplitude, 1sigma for random, peak value for sinusoidal
-            if env[-1] == 'g' or env[-1] == 'G':
+            if env[-1] == 'g' or env[-1] == 'G':    # acc vib in unit of g
                 vib_amp = 9.8
                 env = env[:-1]  # remove 'g' or 'G'
+            elif env[-1] == 'd' or env[-1] == 'D':  # gyro vib in unit of deg/s
+                vib_amp = attitude.D2R
+                env = env[:-1]  # remove 'd' or 'D'
             try:
                 env = env[1:-1] # remove '[]' or '()'
                 env = env.split(' ')
@@ -617,7 +687,7 @@ class Sim(object):
             if env.ndim == 2 and env.shape[1] == 4: # env is a np.array of size (n,4)
                 vib_def['type'] = 'psd'
                 n = env.shape[0]
-                half_fs = 0.5*self.fs.data
+                half_fs = 0.5*self.fs[0]
                 if env[-1, 0] > half_fs:
                     n = np.where(env[:, 0] > half_fs)[0][0]
                 vib_def['freq'] = env[:n, 0]
@@ -671,9 +741,11 @@ class Sim(object):
                 # src_data is a dict, add associated data of all keys
                 if isinstance(src_data, dict):
                     for key in src_data:
-                        self.dmgr.add_data(i, self.data_map[i][1](src_data[key]), key)
+                        if not self.dmgr.is_available(i, key):
+                            self.dmgr.add_data(i, self.data_map[i][1](src_data[key]), key)
                 else:
-                    self.dmgr.add_data(i, self.data_map[i][1](src_data))
+                    if not self.dmgr.is_available(i):
+                        self.dmgr.add_data(i, self.data_map[i][1](src_data))
 
     def __quat2euler_zyx(self, src):
         '''
@@ -720,3 +792,41 @@ class Sim(object):
             return dst
         else:
             raise ValueError('%s is not a dict or numpy array.'% src.name)
+
+    def __convert_pos(self, data, units, ref_frame):
+        '''
+        Convert position data into a proper form.
+        For example, if units are [deg deg m] or [rad rad m] and ref_frame is 1, convertion
+        is needed. LLA form position will be converted to [x y z] form. Vice Versa.
+        Args:
+            data: nx3 numpy array, can be in [Lat Lon Alt] or [x y z] form.
+            units: units of the data.
+            ref_frame: reference frame of the simulation. 0:NED, 1:virtual inertial
+        Returns:
+            data: nx3 numpy array after convertion.
+            units: units of converted dta
+        '''
+        if ref_frame == 1:
+            # deg to rad
+            if units == ['deg', 'deg', 'm']:
+                units = ['rad', 'rad', 'm']
+                data[:, 0] = data[:, 0] * attitude.D2R
+                data[:, 1] = data[:, 1] * attitude.D2R
+            # lla2ned
+            if units == ['rad', 'rad', 'm']:
+                units = ['m', 'm', 'm']
+                # relative motion in ECEF
+                data = geoparams.lla2ecef_batch(data)
+                ini_pos_ecef = data[0, :]   # initial ECEF position
+                data = data - ini_pos_ecef
+                # relative motion in ECEF to NED, NED defined by first LLA
+                c_ne = attitude.ecef_to_ned(data[0, 0], data[0, 1])
+                data = data.dot(c_ne.T)
+                data = data + ini_pos_ecef
+        elif ref_frame == 0:
+            # ned2lla or ecef2lla
+            #  Because if the data are in NED or ECEF is unknown, this is not supported.
+            if units == ['m', 'm', 'm']:
+                units = ['rad', 'rad', 'm']
+                print("Unsupported position conversion from xyz to LLA.")
+        return data, units

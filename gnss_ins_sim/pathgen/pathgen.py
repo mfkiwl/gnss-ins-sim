@@ -46,7 +46,10 @@ def path_gen(ini_pos_vel_att, motion_def, output_def, mobility, ref_frame=0, mag
                 5: relative att, absolute vel.
             motion_def[:,1:6]: motion params = [Att command, vel along body axis command].
             motion_def[:,7] = maximum time for the given segment, sec.
-        output_def: [[simulation_over_sample_rate imu_freq];[1 gps_freq] or [2 odo_freq]], Hz.
+        output_def: [[simulation_over_sample_rate imu_freq];
+                     [1 gps_freq]
+                     [1 odo_freq]], Hz.
+                     1 means to enable GPS or odometer, otherwise to disable.
         mobility: [max_acceleration, max_angular_acceleration, max_angular_velocity]
         ref_frame: reference frame used as the navigation frame,
             0: NED (default).
@@ -63,8 +66,8 @@ def path_gen(ini_pos_vel_att, motion_def, output_def, mobility, ref_frame=0, mag
             'imu':      True/ideal IMU measurements. Each line is organized as [index, acc, gyro],
                         index is an interger and increases at imu_output_freq.
             'nav':      True position, velocity and attitude (Euler angles, ZYX).
-                        ref_frame==0, [index, absolute_position_lla, velocity_in_body_frame, attitude],
-                        ref_frame==1, [index, absolute_position_xyz, velocity_in_body_frame, attitude],
+                        ref_frame==0, [index, absolute_position_lla, velocity_in_NED_frame, attitude],
+                        ref_frame==1, [index, absolute_position_xyz, velocity_in_NED_frame, attitude],
                         Notice: For absolute_position_xyz, it is indeed the sum of the initial
                         position in ecef and the relative position in the virutal inertial frame.
                         Index is synced with index in mimu.csv.
@@ -124,18 +127,23 @@ def path_gen(ini_pos_vel_att, motion_def, output_def, mobility, ref_frame=0, mag
     sim_count_max = int(sim_count_max)
     imu_data = np.zeros((sim_count_max, 7))
     nav_data = np.zeros((sim_count_max, 10))
-    enable_gps_or_odo = False
-    if output_def.shape[0] >= 2:
+    enable_gps = False
+    enable_odo = False
+    if output_def.shape[0] == 3:
         if output_def[1, 0] == 1:
-            enable_gps_or_odo = True
+            enable_gps = True
             gps_data = np.zeros((sim_count_max, 8))
-            output_def[1, 1] = sim_osr * round(out_freq / output_def[1, 1])
-        elif output_def[1, 0] == 2:
-            enable_gps_or_odo = True
-            odo_data = np.zeros((sim_count_max, 5))
             output_def[1, 1] = sim_osr * round(out_freq / output_def[1, 1])
         else:
             output_def[1, 0] = -1
+        if output_def[2, 0] == 1:
+            enable_odo = True
+            odo_data = np.zeros((sim_count_max, 5))
+            output_def[2, 1] = sim_osr * round(out_freq / output_def[2, 1])
+        else:
+            output_def[2, 0] = -1
+    else:
+        raise ValueError("output_def should be of size 3x2.")
     if magnet:
         mag_data = np.zeros((sim_count_max, 4))
 
@@ -163,12 +171,12 @@ def path_gen(ini_pos_vel_att, motion_def, output_def, mobility, ref_frame=0, mag
             geo_mag_n[1] = 0.0
     ## start trajectory generation
     if ref_frame == 1:      # if using virtual inertial frame, convert LLA to ECEF xyz
-        pos_n = geoparams.lla2xyz(pos_n)
+        pos_n = geoparams.lla2ecef(pos_n)
     idx_high_freq = 0       # data index for imu, nav, mag
     idx_low_freq = 0        # data index for gps, odo
     for i in range(0, motion_def.shape[0]):
         com_type = round(motion_def[i, 0])      # command type of this segment
-        gps_visibility = motion_def[i, 8]       # gps visibility       
+        gps_visibility = motion_def[i, 8]       # gps visibility
         # get command of this segment
         '''if i == 2:
             print("haha")'''
@@ -251,9 +259,9 @@ def path_gen(ini_pos_vel_att, motion_def, output_def, mobility, ref_frame=0, mag
                 nav_data[idx_high_freq, 1] = pos_n[0] + pos_delta_n[0]
                 nav_data[idx_high_freq, 2] = pos_n[1] + pos_delta_n[1]
                 nav_data[idx_high_freq, 3] = pos_n[2] + pos_delta_n[2]
-                nav_data[idx_high_freq, 4] = vel_b[0]
-                nav_data[idx_high_freq, 5] = vel_b[1]
-                nav_data[idx_high_freq, 6] = vel_b[2]
+                nav_data[idx_high_freq, 4] = vel_n[0]
+                nav_data[idx_high_freq, 5] = vel_n[1]
+                nav_data[idx_high_freq, 6] = vel_n[2]
                 euler_angles = attitude.euler_angle_range_three_axis(att)
                 nav_data[idx_high_freq, 7] = euler_angles[0] # yaw [-pi, pi]
                 nav_data[idx_high_freq, 8] = euler_angles[1] # pitch [-pi/2, pi/2]
@@ -261,7 +269,7 @@ def path_gen(ini_pos_vel_att, motion_def, output_def, mobility, ref_frame=0, mag
                 # next cycle
                 acc_sum = np.zeros(3)
                 gyro_sum = np.zeros(3)
-                # update magnetometer results and write to file
+                # update magnetometer results
                 if magnet:
                     geo_mag_b = c_nb.T.dot(geo_mag_n)
                     #mag_data[idx_high_freq, :] = np.hstack((idx_high_freq, geo_mag_b))
@@ -269,28 +277,28 @@ def path_gen(ini_pos_vel_att, motion_def, output_def, mobility, ref_frame=0, mag
                     mag_data[idx_high_freq, 1] = geo_mag_b[0]
                     mag_data[idx_high_freq, 2] = geo_mag_b[1]
                     mag_data[idx_high_freq, 3] = geo_mag_b[2]
+                # update odometer results
+                if enable_odo:
+                    #odo_data[idx_high_freq, :] = np.hstack((idx_high_freq,
+                    #                                       odo_dist, odo_vel))
+                    odo_data[idx_high_freq, 0] = sim_count
+                    odo_data[idx_high_freq, 1] = odo_dist
+                    odo_data[idx_high_freq, 2] = odo_vel[0]
+                    odo_data[idx_high_freq, 3] = odo_vel[1]
+                    odo_data[idx_high_freq, 4] = odo_vel[2]
                 # index increment
                 idx_high_freq += 1
             # GPS or odometer measurement
-            if enable_gps_or_odo:
+            if enable_gps:
                 if (sim_count % output_def[1, 1]) == 0:     # measurement period
-                    if output_def[1, 0] == 1:               # GPS
-                        gps_data[idx_low_freq, 0] = sim_count
-                        gps_data[idx_low_freq, 1] = pos_n[0] + pos_delta_n[0]
-                        gps_data[idx_low_freq, 2] = pos_n[1] + pos_delta_n[1]
-                        gps_data[idx_low_freq, 3] = pos_n[2] + pos_delta_n[2]
-                        gps_data[idx_low_freq, 4] = vel_n[0]
-                        gps_data[idx_low_freq, 5] = vel_n[1]
-                        gps_data[idx_low_freq, 6] = vel_n[2]
-                        gps_data[idx_low_freq, 7] = gps_visibility
-                    elif output_def[1, 0] == 2:             # odometer
-                        #odo_data[idx_low_freq, :] = np.hstack((idx_low_freq,
-                        #                                       odo_dist, odo_vel))
-                        odo_data[idx_low_freq, 0] = sim_count
-                        odo_data[idx_low_freq, 1] = odo_dist
-                        odo_data[idx_low_freq, 2] = odo_vel[0]
-                        odo_data[idx_low_freq, 3] = odo_vel[1]
-                        odo_data[idx_low_freq, 4] = odo_vel[2]
+                    gps_data[idx_low_freq, 0] = sim_count
+                    gps_data[idx_low_freq, 1] = pos_n[0] + pos_delta_n[0]
+                    gps_data[idx_low_freq, 2] = pos_n[1] + pos_delta_n[1]
+                    gps_data[idx_low_freq, 3] = pos_n[2] + pos_delta_n[2]
+                    gps_data[idx_low_freq, 4] = vel_n[0]
+                    gps_data[idx_low_freq, 5] = vel_n[1]
+                    gps_data[idx_low_freq, 6] = vel_n[2]
+                    gps_data[idx_low_freq, 7] = gps_visibility
                     # index increment
                     idx_low_freq += 1
 
@@ -314,10 +322,10 @@ def path_gen(ini_pos_vel_att, motion_def, output_def, mobility, ref_frame=0, mag
     path_results['nav'] = nav_data[0:idx_high_freq, :]
     if magnet:
         path_results['mag'] = mag_data[0:idx_high_freq, :]
-    if output_def[1, 0] == 1:
+    if enable_odo:
+        path_results['odo'] = odo_data[0:idx_high_freq, :]
+    if enable_gps:
         path_results['gps'] = gps_data[0:idx_low_freq, :]
-    elif output_def[1, 0] == 2:
-        path_results['odo'] = odo_data[0:idx_low_freq, :]
     return path_results
 
 def calc_true_sensor_output(pos_n, vel_b, att, c_nb, vel_dot_b, att_dot, ref_frame, g):
@@ -451,9 +459,9 @@ def acc_gen(fs, ref_a, acc_err, vib_def=None):
                 x, y and z axis. units: m/s2.
             'type' == 'psd'. Single sided PSD.
                 'freq':  frequency, in unit of Hz
-                'x': x axis, in unit of m2/s4/Hz.
-                'y': y axis, in unit of m2/s4/Hz.
-                'z': z axis, in unit of m2/s4/Hz.
+                'x': x axis, in unit of (m/s^2)^2/Hz.
+                'y': y axis, in unit of (m/s^2)^2/Hz.
+                'z': z axis, in unit of (m/s^2)^2/Hz.
     Returns:
         a_mea: nx3 measured acc data
     """
@@ -492,7 +500,7 @@ def acc_gen(fs, ref_a, acc_err, vib_def=None):
     a_mea = ref_a + acc_bias + acc_bias_drift + acc_noise + acc_vib
     return a_mea
 
-def gyro_gen(fs, ref_w, gyro_err):
+def gyro_gen(fs, ref_w, gyro_err, vib_def=None):
     """
     Add error to true gyro data according to gyroscope model parameters
     Args:
@@ -502,6 +510,20 @@ def gyro_gen(fs, ref_w, gyro_err):
             'b': 3x1 constant gyro bias, rad/s.
             'b_drift': 3x1 gyro bias drift, rad/s.
             'arw': 3x1 angle random walk, rad/s/root-Hz.
+        vib_def: Vibration model and parameters. Vibration type can be random, sinunoida or
+            specified by single-sided PSD.
+            Generated vibrating acc is expressed in the body frame.
+            'type' == 'random':
+                Normal distribution. 'x', 'y' and 'z' give the 1sigma values along x, y and z axis.
+                units: rad/s
+            'type' == 'sinunoidal'
+                Sinunoidal vibration. 'x', 'y' and 'z' give the amplitude of the sine wave along
+                x, y and z axis. units: rad/s.
+            'type' == 'psd'. Single sided PSD.
+                'freq':  frequency, in unit of Hz
+                'x': x axis, in unit of (rad/s)^2/Hz.
+                'y': y axis, in unit of (rad/s)^2/Hz.
+                'z': z axis, in unit of (rad/s)^2/Hz.
     Returns:
         w_mea: nx3 measured gyro data
     """
@@ -511,15 +533,33 @@ def gyro_gen(fs, ref_w, gyro_err):
     ## simulate sensor error
     # static bias
     gyro_bias = gyro_err['b']
-    # bias drift Todo: first-order Gauss-Markov model
+    # bias drift
     gyro_bias_drift = bias_drift(gyro_err['b_corr'], gyro_err['b_drift'], n, fs)
+    # vibrating gyro
+    gyro_vib = np.zeros((n, 3))
+    if vib_def is not None:
+        if vib_def['type'].lower() == 'psd':
+            gyro_vib[:, 0] = time_series_from_psd.time_series_from_psd(vib_def['x'],
+                                                                       vib_def['freq'], fs, n)[1]
+            gyro_vib[:, 1] = time_series_from_psd.time_series_from_psd(vib_def['y'],
+                                                                       vib_def['freq'], fs, n)[1]
+            gyro_vib[:, 2] = time_series_from_psd.time_series_from_psd(vib_def['z'],
+                                                                       vib_def['freq'], fs, n)[1]
+        elif vib_def['type'] == 'random':
+            gyro_vib[:, 0] = vib_def['x'] * np.random.randn(n)
+            gyro_vib[:, 1] = vib_def['y'] * np.random.randn(n)
+            gyro_vib[:, 2] = vib_def['z'] * np.random.randn(n)
+        elif vib_def['type'] == 'sinusoidal':
+            gyro_vib[:, 0] = vib_def['x'] * np.sin(2.0*math.pi*vib_def['freq']*dt*np.arange(n))
+            gyro_vib[:, 1] = vib_def['y'] * np.sin(2.0*math.pi*vib_def['freq']*dt*np.arange(n))
+            gyro_vib[:, 2] = vib_def['z'] * np.sin(2.0*math.pi*vib_def['freq']*dt*np.arange(n))
     # gyroscope white noise
     gyro_noise = np.random.randn(n, 3)
     gyro_noise[:, 0] = gyro_err['arw'][0] / math.sqrt(dt) * gyro_noise[:, 0]
     gyro_noise[:, 1] = gyro_err['arw'][1] / math.sqrt(dt) * gyro_noise[:, 1]
     gyro_noise[:, 2] = gyro_err['arw'][2] / math.sqrt(dt) * gyro_noise[:, 2]
     # true + constant_bias + bias_drift + noise
-    w_mea = ref_w + gyro_bias + gyro_bias_drift + gyro_noise
+    w_mea = ref_w + gyro_bias + gyro_bias_drift + gyro_noise + gyro_vib
     return w_mea
 
 def bias_drift(corr_time, drift, n, fs):
@@ -541,7 +581,9 @@ def bias_drift(corr_time, drift, n, fs):
         if not math.isinf(corr_time[i]):
             # First-order Gauss-Markov
             a = 1 - 1/fs/corr_time[i]
-            b = 1/fs*drift[i]
+            # For the following equation, see issue #19 and
+            # https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3812568/ (Eq. 3).
+            b = drift[i] * np.sqrt(1.0 - np.exp(-2/(fs * corr_time[i])))
             #sensor_bias_drift[0, :] = np.random.randn(3) * drift
             drift_noise = np.random.randn(n, 3)
             for j in range(1, n):
@@ -569,13 +611,14 @@ def gps_gen(ref_gps, gps_err, gps_type=0):
     '''
     # total data count
     n = ref_gps.shape[0]
+    pos_err = gps_err['stdp'].copy()
     # If position is in the form of LLA, convert gps_err['stdp'] to LLA error
     if gps_type == 0:   # GPS is in the form of LLA, stdp meter to rad
-        earth_param = geoparams.geo_param(ref_gps[0, 1:4])
-        gps_err['stdp'][0] = gps_err['stdp'][0] / earth_param[0]
-        gps_err['stdp'][1] = gps_err['stdp'][1] / earth_param[1] / earth_param[4]
+        earth_param = geoparams.geo_param(ref_gps[0, 0:3])
+        pos_err[0] = pos_err[0] / earth_param[0]
+        pos_err[1] = pos_err[1] / earth_param[1] / earth_param[4]
     ## simulate GPS error
-    pos_noise = gps_err['stdp'] * np.random.randn(n, 3)
+    pos_noise = pos_err * np.random.randn(n, 3)
     vel_noise = gps_err['stdv'] * np.random.randn(n, 3)
     gps_mea = np.hstack([ref_gps[:, 0:3] + pos_noise,
                          ref_gps[:, 3:6] + vel_noise])
@@ -587,18 +630,15 @@ def odo_gen(ref_odo, odo_err):
     Args:
         ref_odo: nx3, true odometer data, m/s.
         odo_err: odometer error profile.
-            'scale': 3x1, scale factor error.
-            'std': 3x1, RMS velocity error.
+            'scale': scalar, scale factor error.
+            'stdv': scalar, RMS velocity error.
     Returns:
-        odo_mea: nx3, measured odometer output.
+        odo_mea: nx1, measured odometer output.
     '''
     n = ref_odo.shape[0]
-    odo_noise = np.random.randn(n, 3)
-    scale_factor = odo_err['scale']
-    odo_noise[:, 0] = scale_factor[0]*ref_odo[:, 0] + odo_err['std'][0]*odo_noise[:, 0]
-    odo_noise[:, 1] = scale_factor[1]*ref_odo[:, 1] + odo_err['std'][1]*odo_noise[:, 1]
-    odo_noise[:, 2] = scale_factor[2]*ref_odo[:, 2] + odo_err['std'][2]*odo_noise[:, 2]
-    return odo_noise
+    odo_mea = np.random.randn(n)
+    odo_mea = odo_err['scale']*ref_odo + odo_err['stdv']*odo_mea
+    return odo_mea
 
 def mag_gen(ref_mag, mag_err):
     """

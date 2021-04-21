@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-# Filename: free_integration.py
+# Filename: free_integration_odo.py
 
 """
-IMU free integration in a virtual inertial frame.
+Demo free integration with an odometer.
 This is a demo algorithm for Sim.
-Created on 2017-12-20
+Created on 2019-05-13
 @author: dongxiaoguang
 """
 
@@ -26,7 +26,7 @@ class FreeIntegration(object):
             earth_rot: Consider the Earth rotation or not. Only used when ref_frame=0.
         '''
         # algorithm description
-        self.input = ['ref_frame', 'fs', 'gyro', 'accel']
+        self.input = ['ref_frame', 'fs', 'gyro', 'odo']
         self.output = ['att_euler', 'pos', 'vel']
         self.earth_rot = earth_rot
         self.batch = True
@@ -72,8 +72,8 @@ class FreeIntegration(object):
             self.ref_frame = 0
         self.dt = 1.0 / set_of_input[1]
         gyro = set_of_input[2]
-        accel = set_of_input[3]
-        n = accel.shape[0]
+        odo = set_of_input[3]
+        n = gyro.shape[0]
         # Free IMU integration
         self.att = np.zeros((n, 3))
         self.pos = np.zeros((n, 3))
@@ -85,12 +85,7 @@ class FreeIntegration(object):
             idx = self.run_times - 1
             if self.run_times > self.set_of_inis:
                 idx = 0
-            # Earth gravity
-            if self.gravity is None:
-                earth_param = geoparams.geo_param(self.r0[:, idx])    # geo parameters
-                g_n = np.array([0, 0, earth_param[2]])
-            else:
-                g_n = np.array([0, 0, self.gravity[idx]])
+            # free integration
             for i in range(n):
                 #### initialize
                 if i == 0:
@@ -102,14 +97,10 @@ class FreeIntegration(object):
                     continue
                 #### propagate Euler angles
                 self.att[i, :] = attitude.euler_update_zyx(self.att[i-1, :], gyro[i-1, :], self.dt)
-                #### propagate velocity in the navigation frame
-                # accel_n = c_nb.dot(accel[i-1, :])
-                # self.vel[i, :] = self.vel[i-1, :] + (accel_n + g_n) * self.dt
-                #### propagate velocity in the body frame
-                # c_bn here is from last loop (i-1), and used to project gravity
-                self.vel_b[i, :] = self.vel_b[i-1, :] +\
-                                (accel[i-1, :] + c_bn.dot(g_n)) * self.dt -\
-                                attitude.cross3(gyro[i-1, :], self.vel_b[i-1, :]) * self.dt
+                #### velocity is from odometer
+                self.vel_b[i, 0] = odo[i-1] # body axis is the direction of heading
+                self.vel_b[i, 1] = 0.0
+                self.vel_b[i, 2] = 0.0
                 # c_bn (i)
                 c_bn = attitude.euler2dcm(self.att[i, :])
                 self.vel[i, :] = c_bn.T.dot(self.vel_b[i, :])   # velocity in navigation frame
@@ -134,16 +125,11 @@ class FreeIntegration(object):
                 earth_param = geoparams.geo_param(self.pos[i-1, :])
                 rm = earth_param[0]
                 rn = earth_param[1]
-                g = earth_param[2]
                 sl = earth_param[3]
                 cl = earth_param[4]
                 w_ie = earth_param[5]
                 rm_effective = rm + self.pos[i-1, 2]
                 rn_effective = rn + self.pos[i-1, 2]
-                if self.gravity is None:
-                    g_n = np.array([0, 0, g])
-                else:
-                    g_n = np.array([0, 0, self.gravity[idx]])
                 w_en_n[0] = self.vel[i-1, 1] / rn_effective              # wN
                 w_en_n[1] = -self.vel[i-1, 0] / rm_effective             # wE
                 w_en_n[2] = -self.vel[i-1, 1] * sl /cl / rn_effective    # wD
@@ -153,13 +139,13 @@ class FreeIntegration(object):
                 #### propagate euler angles
                 w_nb_b = gyro[i-1, :] - c_bn.dot(w_en_n + w_ie_n)
                 self.att[i, :] = attitude.euler_update_zyx(self.att[i-1, :], w_nb_b, self.dt)
-                #### propagate velocity
-                # vel_dot_b = accel[i-1, :] + c_bn.T.dot(g_n) -\
-                #             attitude.cross3(c_bn.dot(w_ie_n)+gyro[i-1,:], self.vel_b[i-1,:])
-                # self.vel_b[i,:] = self.vel_b[i-1,:] + vel_dot_b*self.dt
-                vel_dot_n = c_bn.T.dot(accel[i-1, :]) + g_n -\
-                            attitude.cross3(2*w_ie_n + w_en_n, self.vel[i-1, :])
-                self.vel[i, :] = self.vel[i-1, :] + vel_dot_n * self.dt
+                #### velocity is from odometer
+                self.vel_b[i, 0] = odo[i-1] # body axis is the direction of heading
+                self.vel_b[i, 1] = 0.0
+                self.vel_b[i, 2] = 0.0
+                # c_bn (i)
+                c_bn = attitude.euler2dcm(self.att[i, :])
+                self.vel[i, :] = c_bn.T.dot(self.vel_b[i, :])   # velocity in navigation frame
                 #### propagate position
                 lat_dot = self.vel[i-1, 0] / rm_effective
                 lon_dot = self.vel[i-1, 1] / rn_effective / cl

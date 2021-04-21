@@ -90,7 +90,7 @@ gps = True to generate GPS data, gps = False not.
 
 ## Step 2 Create a motion profile
 
-Motion profile specifies the initial states of the vehicle and motion command that drives the vehicle to move, as shown in the following table.
+A motion profile specifies the initial states of the vehicle and motion command that drives the vehicle to move, as shown in the following table.
 
 | Ini lat (deg) | ini lon (deg) | ini alt (m) | ini vx_body (m/s) | ini vy_body (m/s) | ini vz_body (m/s) | ini yaw (deg) | ini pitch (deg) | ini roll (deg) |
 |---|---|---|---|---|---|---|---|---|
@@ -101,10 +101,10 @@ Motion profile specifies the initial states of the vehicle and motion command th
 
 The initial position should be given in the LLA (latitude, longitude and altitude) form. The initial velocity is specified in the vehicle body frame. The initial attitude is represented by Euler angles of ZYX rotation sequence.
 
-Motion commands defines how the vehicle moves from its initial state. The simulation will generate true angular velocity, acceleration, magnetic field, position, velocity and attitude according to the commands. Combined with sensor error models, these true values are used to generate gyroscope, accelerometer, magnetometer and GPS output.
+Motion commands define how the vehicle moves from its initial state. The simulation will generate true angular velocity, acceleration, magnetic field, position, velocity and attitude according to the commands. Combined with sensor error models, these true values are used to generate gyroscope, accelerometer, magnetometer and GPS output.
 There is only one motion command in the above table. Indeed, you can add more motion commands to specify the attitude and velocity of the vehicle. You can also define GPS visibility of the vehicle for each command.
 
-Five command types are supported
+Five command types are supported, as listed below.
 
 | Command type | Comment |
 |---|---|
@@ -182,7 +182,7 @@ Each string in 'input' and 'output' corresponds to a set of data supported by **
 
 | name | description |
 |-|-|
-| 'ref_frame' | Reference frame used as the navigation frame and the attitude reference. <br> 0: NED (default), with x axis pointing along geographic north, y axis pointing eastward, z axis pointing downward. Position will be expressed in LLA form, and the velocity of the vehicle relative to the ECEF frame will be expressed in local NED frame. <br> 1: a virtual inertial frame with constant g, x axis pointing along geographic or magnetic north, z axis pointing along g, y axis completing a right-handed coordinate system. Positive and velocity will both be in the [x y z] form in this frame. <br> **Notice: For this virtual inertial frame, position is indeed the sum of the initial position in ecef and the relative position in the virutal inertial frame. Indeed, two vectors expressed in different frames should not be added. This is done in this way here just to preserve all useful information to generate .kml files. Keep this in mind if you use this result.|
+| 'ref_frame' | Reference frame used as the navigation frame and the attitude reference. <br> 0: NED (default), with x axis pointing along geographic north, y axis pointing eastward, z axis pointing downward. Position will be expressed in LLA form, and the velocity of the vehicle relative to the ECEF frame will be expressed in local NED frame. <br> 1: a virtual inertial frame with constant g, x axis pointing along geographic or magnetic north, z axis pointing along g, y axis completing a right-handed coordinate system. Position and velocity will both be in the [x y z] form in this frame. <br> **Notice: For this virtual inertial frame, position is indeed the sum of the initial position in ecef and the relative position in the virutal inertial frame. Indeed, two vectors expressed in different frames should not be added. This is done in this way here just to preserve all useful information to generate .kml files. Keep this in mind if you use this result.|
 | 'fs' | Sample frequency of IMU, units: Hz |
 | 'fs_gps' | Sample frequency of GNSS, units: Hz |
 | 'fs_mag' | Sample frequency of magnetometer, units: Hz |
@@ -191,7 +191,7 @@ Each string in 'input' and 'output' corresponds to a set of data supported by **
 | 'algo_time' | Time series corresponding to algorithm output, units: ['s']. If your algorithm output data rate is different from the input data rate, you should include 'algo_time' in the algorithm output. |
 | 'gps_visibility' | Indicate if GPS is available. 1 means yes, and 0 means no. |
 | 'ref_pos' | True position in the navigation frame. When users choose NED (ref_frame=0) as the navigation frame, positions will be given in the form of [Latitude, Longitude, Altitude], units: ['rad', 'rad', 'm']. When users choose the virtual inertial frame, positions (initial position + positions relative to the  origin of the frame) will be given in the form of [x, y, z], units:  ['m', 'm', 'm']. |
-| 'ref_vel' | True velocity w.r.t the navigation/reference frame expressed in the body frame, units: ['m/s', 'm/s', 'm/s']. |
+| 'ref_vel' | True velocity w.r.t the navigation/reference frame expressed in the NED frame, units: ['m/s', 'm/s', 'm/s']. |
 | 'ref_att_euler' | True attitude (Euler angles, ZYX rotation sequency), units: ['rad', 'rad', 'rad'] |
 | 'ref_att_quat' | True attitude (quaternions) |
 | 'ref_gyro' | True angular velocity in the body frame, units: ['rad/s', 'rad/s', 'rad/s'] |
@@ -256,7 +256,7 @@ For example, if you set self.output = ['allan_t', 'allan_std_accel', 'allan_std_
         # sample rate of imu (gyro and accel), GPS and magnetometer
         [fs, fs_gps, fs_mag],
         # initial conditions and motion definition,
-        # see IMU in imu_sim.py for details
+        # see IMU in ins_sim.py for details
         data_path+"//motion_def-90deg_turn.csv",
         # reference frame
         ref_frame=1,
@@ -274,16 +274,24 @@ For example, if you set self.output = ['allan_t', 'allan_std_accel', 'allan_std_
 
 **gnss-ins-sim** supports running multiple algorithms in one simulation. You can refer to demo_multiple_algorihtms.py for example.
 
-There are three kinds of vibration models:
+There are three kinds of vibration models: random, sinusoidal and PSD.
 
-| vibration model | description |
+| Acceleration vibration model | description |
 |-|-|
-| 'ng-random' | normal-distribution random vibration, rms is n*9.8 m/s^2 |
-| 'n-random' | normal-distribution random vibration, rms is n m/s^2 |
-| 'ng-mHz-sinusoidal' | sinusoidal vibration of m Hz, amplitude is n*9.8 m/s^2 |
-| 'n-mHz-sinusoidal' | sinusoidal vibration of m Hz, amplitude is n m/s^2 |
-| numpy array of size (n,4) | single-sided PSD. [freqency, x, y, z], m^2/s^4/Hz |
+| '[nx ny nz]g-random' | normal-distribution random vibration, rms is n*9.8 m/s^2 |
+| '[nx ny nz]-random' | normal-distribution random vibration, rms is n m/s^2 |
+| '[nx ny nz]g-mHz-sinusoidal' | sinusoidal vibration of m Hz, amplitude is n*9.8 m/s^2 |
+| '[nx ny nz]-mHz-sinusoidal' | sinusoidal vibration of m Hz, amplitude is n m/s^2 |
+| numpy array of size (n,4) | single-sided PSD. The four columns are [freqency, x, y, z], in units of (m/s^2)^2/Hz |
+|
 
+For the vibratoin model of the gyro, it is similar as that of the acceleration except that the unit is default to rad/s and 'd' is used to change the unit to be deg/s.
+
+The following example sets random vibration to accel with RMS for x/y/z axis being 1, 2 and 3 m/s^2, respectively, and sets sinusoidal vibration to gyro with frequency being 0.5Hz and amplitude for x/y/z axis being 6, 5 and 4 deg/s, respectively.
+```
+    env = {'acc': '[1 2 3]-random',
+           'gyro': '[6 5 4]d-0.5Hz-sinusoidal'}
+```
 ### Step 4.2 Run the simulation
 
 ```python

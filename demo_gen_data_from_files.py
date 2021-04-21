@@ -31,7 +31,7 @@ def gen_data_first(data_dir):
     # start simulation
     sim = ins_sim.Sim([fs, fs_gps, fs_mag],
                       motion_def_path+"//motion_def-90deg_turn.csv",
-                      ref_frame=1,
+                      ref_frame=0,
                       imu=imu,
                       mode=None,
                       env=None,
@@ -68,18 +68,18 @@ def test_gen_data_from_files(data_dir):
     #### start simulation
     sim = ins_sim.Sim([fs, 0.0, 0.0],
                       data_dir,
-                      ref_frame=1,
+                      ref_frame=0,
                       imu=None,
                       mode=None,
                       env=None,
                       algorithm=algo)
     # run the simulation for 1000 times
-    sim.run(10)
+    sim.run(1)
     # generate simulation results, summary
-    # do not save data since the simulation runs for 1000 times and generates too many results
-    sim.results(end_point=True)
+    sim.results('', err_stats_start=-1, gen_kml=True)
+    sim.plot(['att_euler'])
 
 if __name__ == '__main__':
-    dir_of_logged_files = ".//demo_saved_data//demo_gen_data_from_files"
+    dir_of_logged_files = os.path.abspath('.//demo_saved_data//tmp//')
     gen_data_first(dir_of_logged_files)
     test_gen_data_from_files(dir_of_logged_files)
